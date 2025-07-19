@@ -65,6 +65,62 @@ def parse_structure(structure_str, base_dir='.'):
     if current_file and file_content_lines:
         write_file(os.path.join(*path_stack[:-1], current_file), file_content_lines)
 
+import os
+
+def combine_files(directory):
+    """Reads files from a directory and combines their contents into a single string."""
+    combined_string = ""
+    try:
+        for filename in sorted(os.listdir(directory)):  # Sort alphabetically for consistent results
+            combined_string += '#############' + filename + '############\n'
+            if os.path.isfile(os.path.join(directory, filename)):
+                with open(os.path.join(directory, filename), 'r', encoding='utf-8') as f:  # Use utf-8 encoding to handle various characters
+                    combined_string += f.read() + "\\n############end-of-ilr##########" # Add a newline between files.
+                    
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+    return combined_string
+
+
+
+import requests
+
+def query_lmstudio(prompt, endpoint="http://localhost:1234/v1/chat/completions"):
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    # For chat models (like Mistral, LLaMA2, etc.)
+    payload = {
+        "model": "local-model",  # LM Studio ignores this, but it's required
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 256,
+        "stream": False  # Change to True to handle streaming
+    }
+
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+        # Print the assistant's response
+        print(result['choices'][0]['message']['content'])
+
+    except requests.exceptions.RequestException as e:
+        print("Error querying LM Studio:", e)
+    except KeyError:
+        print("Unexpected response format:", response.text)
+
+if __name__ == "__main__":
+    prompt = input("Enter your prompt: ")
+    query_lmstudio(prompt)
+
+
 if __name__ == "__main__":
     import sys
     dir_path = sys.argv[1] if len(sys.argv) > 1 else "."
