@@ -1,176 +1,112 @@
 import os
-import requests
-import textwrap
-import json
-import sys
-import logging
-import configparser
-from pathlib import Path
-from typing import Optional, List
+import subprocess
+import argparse
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('directory_processor.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-class DirectoryProcessor:
-    def __init__(self, config_path: str = "config.ini"):
-        self.config = self._load_config(config_path)
-        self.endpoint = self.config.get('LMStudio', 'endpoint', 
-            fallback="http://192.168.0.16:1234/v1/chat/completions")
-        self.default_query = self.config.get('LMStudio', 'default_query',
-            fallback="Optimize and refactor this code structure, maintaining functionality but improving organization and efficiency.")
-
-    def _load_config(self, config_path: str) -> configparser.ConfigParser:
-        """Load configuration from INI file."""
-        config = configparser.ConfigParser()
-        try:
-            config.read(config_path)
-            if not config.sections():
-                logger.warning(f"Config file {config_path} not found or empty, using defaults")
-        except Exception as e:
-            logger.error(f"Error reading config file: {str(e)}")
-        return config
-
-    def get_directory_structure(self, path: Path, indent: int = 0) -> str:
-        """Recursively generate directory structure string."""
-        tree_str = ""
-        try:
-            for item in sorted(os.listdir(path)):
-                full_path = path / item
-                tree_str += "    " * indent + f"{item}/\n" if full_path.is_dir() else "    " * indent + f"{item}\n"
-                if full_path.is_dir():
-                    tree_str += self.get_directory_structure(full_path, indent + 1)
-                else:
-                    try:
-                        with open(full_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                            for line in content.splitlines():
-                                tree_str += "    " * (indent + 1) + f"{line}\n"
-                    except Exception as e:
-                        tree_str += "    " * (indent + 1) + f"[Error reading file: {str(e)}]\n"
-        except PermissionError as e:
-            logger.error(f"Permission denied accessing {path}: {str(e)}")
-            tree_str += "    " * indent + f"[Permission denied: {path}]\n"
-        return tree_str
-
-    def directory_structure_as_string(self, path: str) -> str:
-        """Convert directory structure to formatted string."""
-        path_obj = Path(path)
-        if not path_obj.is_dir():
-            raise ValueError(f"The path '{path}' is not a valid directory.")
-        return f'"""\n{self.get_directory_structure(path_obj)}"""'
-
-    def query_lmstudio(self, prompt: str, endpoint: Optional[str] = None) -> Optional[str]:
-        """Query LM Studio with given prompt."""
-        endpoint = endpoint or self.endpoint
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "model": self.config.get('LMStudio', 'model', fallback="local-model"),
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.config.getfloat('LMStudio', 'temperature', fallback=0.7),
-            "max_tokens": self.config.getint('LMStudio', 'max_tokens', fallback=2048),
-            "stream": False
-        }
-        
-        try:
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error querying LM Studio at {endpoint}: {str(e)}")
-            return None
-        except (KeyError, json.JSONDecodeError) as e:
-            logger.error(f"Unexpected response format from {endpoint}: {response.text}")
-            return None
-
-    def parse_structure(self, structure_str: str, base_dir: str = 'output') -> None:
-        """Parse directory structure string and create files."""
-        lines = structure_str.strip().splitlines()
-        path_stack = [base_dir]
-        current_indent = 0
-        current_file = None
-        file_content_lines: List[str] = []
-
-        def write_file(filepath: str, content_lines: List[str]) -> None:
-            try:
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(content_lines).rstrip() + '\n')
-                logger.info(f"Created file: {filepath}")
-            except Exception as e:
-                logger.error(f"Error writing file {filepath}: {str(e)}")
-
-        for line in lines:
-            if not line.strip():
-                continue
-            indent = len(line) - len(line.lstrip())
-            stripped = line.strip()
-            
-            while indent < current_indent:
-                popped = path_stack.pop()
-                if current_file == popped:
-                    if file_content_lines:
-                        write_file(os.path.join(*path_stack, current_file), file_content_lines)
-                        file_content_lines = []
-                    current_file = None
-                current_indent -= 4
-            
-            if stripped.endswith('/'):
-                path_stack.append(stripped[:-1])
-                current_indent = indent + 4
-            elif '.' in stripped and not stripped.startswith('#'):
-                if current_file and file_content_lines:
-                    write_file(os.path.join(*path_stack, current_file), file_content_lines)
-                    file_content_lines = []
-                current_file = stripped
-                current_indent = indent + 4
-                path_stack.append(current_file)
+def process_directory(input_dir, mode, output_dir=None):
+    """
+    Process a directory structure based on the specified mode.
+    
+    Args:
+        input_dir (str): Path to the input directory.
+        mode (str): Operation mode ('recreate', 'text', or 'bash').
+        output_dir (str, optional): Path to the output directory for 'recreate' mode.
+    
+    Returns:
+        str: Formatted directory structure or bash script content.
+    """
+    def get_directory_structure(directory, indent=0):
+        """Recursively get directory structure and file contents."""
+        structure = []
+        for item in sorted(os.listdir(directory)):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                structure.append("  " * indent + f"{item}/")
+                structure.extend(get_directory_structure(item_path, indent + 1))
             else:
-                file_content_lines.append(stripped)
+                structure.append("  " * indent + f"{item}")
+                try:
+                    with open(item_path, 'r', encoding='utf-8') as f:
+                        content = f.read().splitlines()
+                        for line in content:
+                            structure.append("  " * (indent + 1) + line)
+                except Exception:
+                    structure.append("  " * (indent + 1) + "[Unable to read file]")
+        return structure
 
-        if current_file and file_content_lines:
-            write_file(os.path.join(*path_stack[:-1], current_file), file_content_lines)
+    # Get the directory structure
+    dir_content = "\n".join(get_directory_structure(input_dir))
+
+    if mode == "recreate":
+        if not output_dir:
+            raise ValueError("Output directory must be specified for recreate mode")
+        # Create new directory structure
+        for line in dir_content.splitlines():
+            indent_level = len(line) - len(line.lstrip(" "))
+            item = line.lstrip(" ")
+            if item.endswith("/"):
+                # Create directory
+                os.makedirs(os.path.join(output_dir, item[:-1]), exist_ok=True)
+            elif not line.startswith("  " * (indent_level + 1)):
+                # Create empty file
+                open(os.path.join(output_dir, item), 'a').close()
+            else:
+                # Write content to file
+                parent_dir = line.rsplit("/", 1)[0] if "/" in line else ""
+                file_path = os.path.join(output_dir, parent_dir, item)
+                with open(file_path, 'a', encoding='utf-8') as f:
+                    f.write(line.lstrip(" ") + "\n")
+        return f"Recreated directory structure in {output_dir}\n\n{dir_content}"
+
+    elif mode == "text":
+        # Return text response with directory structure
+        return f"Directory structure and contents:\n\n{dir_content}"
+
+    elif mode == "bash":
+        # Generate bash script
+        bash_script = ["#!/bin/bash", ""]
+        current_dir = ""
+        for line in dir_content.splitlines():
+            indent_level = len(line) - len(line.lstrip(" "))
+            item = line.lstrip(" ")
+            if item.endswith("/"):
+                bash_script.append(f"mkdir -p \"{item[:-1]}\"")
+                current_dir = item[:-1]
+            elif not line.startswith("  " * (indent_level + 1)):
+                bash_script.append(f"touch \"{os.path.join(current_dir, item)}\"")
+            else:
+                bash_script.append(f"echo \"{item}\" >> \"{os.path.join(current_dir, item)}\"")
+        
+        bash_content = "\n".join(bash_script)
+        script_path = "recreate_structure.sh"
+        
+        # Write bash script to file
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(bash_content)
+        
+        # Make script executable
+        os.chmod(script_path, 0o755)
+        
+        # Run the bash script
+        try:
+            result = subprocess.run(["bash", script_path], capture_output=True, text=True, check=True)
+            return f"Bash script generated and executed:\n\n{bash_content}\n\nExecution output:\n{result.stdout}"
+        except subprocess.CalledProcessError as e:
+            return f"Error executing bash script:\n\n{bash_content}\n\nError output:\n{e.stderr}"
 
 def main():
-    processor = DirectoryProcessor()
+    parser = argparse.ArgumentParser(description="Process directory structure with different modes.")
+    parser.add_argument("input_dir", help="Input directory path")
+    parser.add_argument("--mode", choices=["recreate", "text", "bash"], default="text",
+                        help="Operation mode: recreate (new directory), text (print structure), bash (generate and run script)")
+    parser.add_argument("--output-dir", help="Output directory for recreate mode")
     
-    if len(sys.argv) < 2:
-        logger.error("Directory path is required")
-        print("Usage: python process_directory_with_lmstudio.py <directory_path> [query] [endpoint]")
-        sys.exit(1)
-
-    dir_path = sys.argv[1]
-    query = sys.argv[2] if len(sys.argv) > 2 else processor.default_query
-    endpoint = sys.argv[3] if len(sys.argv) > 3 else None
-
-    try:
-        dir_content = processor.directory_structure_as_string(dir_path)
-    except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
-
-    prompt = f"""Given the following directory structure and file contents, {query}:
-
-{dir_content}
-
-Please return the new directory structure and file contents in the same format as provided, with files properly indented under their directories and content indented under files.
-"""
+    args = parser.parse_args()
     
-    response = processor.query_lmstudio(prompt, endpoint)
-    if not response:
-        logger.error("Failed to get response from LM Studio")
-        sys.exit(1)
-
-    output_dir = os.path.join(os.path.dirname(dir_path), f'output_{os.path.basename(dir_path)}')
-    processor.parse_structure(response, base_dir=output_dir)
-    logger.info(f"New directory structure created in {output_dir}")
+    if args.mode == "recreate" and not args.output_dir:
+        parser.error("--output-dir is required for recreate mode")
+    
+    result = process_directory(args.input_dir, args.mode, args.output_dir)
+    print(result)
 
 if __name__ == "__main__":
     main()
