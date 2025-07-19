@@ -1,4 +1,6 @@
 import os
+import textwrap
+
 
 def get_directory_structure(path, indent=0):
     tree_str = ""
@@ -15,9 +17,6 @@ def directory_structure_as_string(path):
     tree = get_directory_structure(path)
     return f'"""\n{tree}"""'
 
-
-import os
-import textwrap
 
 def parse_structure(structure_str, base_dir='.'):
     lines = structure_str.strip().splitlines()
