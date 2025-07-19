@@ -2,16 +2,16 @@ import requests
 import configparser
 
 def _load_config(self, config_path: str) -> configparser.ConfigParser:
-"""Load configuration from INI file."""
-config = configparser.ConfigParser()
-try:
-    config.read(config_path)
-    if not config.sections():
-        logger.warning(f"Config file {config_path} not found or empty, using defaults")
-except Exception as e:
-    logger.error(f"Error reading config file: {str(e)}")
-return config
-
+    """Load configuration from INI file."""
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path)
+        if not config.sections():
+            logger.warning(f"Config file {config_path} not found or empty, using defaults")
+    except Exception as e:
+        logger.error(f"Error reading config file: {str(e)}")
+    return config
+    
 config_path = 'config.ini'
 config = _load_config(config_path)
 
